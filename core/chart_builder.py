@@ -39,19 +39,44 @@ def _style(fig) -> go.Figure:
 
 # ── Column Detection ───────────────────────────────────────────────────────────
 
+DATETIME_SUCCESS_THRESHOLD = 0.9  # 90% of non-null values must parse
+
+
+def _try_datetime(series: pd.Series) -> pd.Series | None:
+    """
+    Attempts to convert a Series to datetime.
+    Returns the converted Series only if >= 90% of non-null values parsed.
+    Otherwise returns None. This prevents phone numbers, zip codes, and IDs
+    from being silently coerced into dates.
+    """
+    non_null_before = series.notna().sum()
+    if non_null_before == 0:
+        return None
+
+    try:
+        converted = pd.to_datetime(series, errors="coerce")
+    except Exception:
+        return None
+
+    non_null_after = converted.notna().sum()
+    ratio = non_null_after / non_null_before
+
+    if ratio >= DATETIME_SUCCESS_THRESHOLD:
+        return converted
+    return None
+
+
 def _detect_columns(df: pd.DataFrame):
     """
-    Returns (numeric_cols, categorical_cols, datetime_cols)
+    Returns (df, numeric_cols, categorical_cols, datetime_cols)
     after attempting safe datetime conversion on object columns.
     """
     df = df.copy()
 
     for col in df.select_dtypes(include="object").columns:
-        try:
-            converted = pd.to_datetime(df[col], infer_datetime_format=True)
+        converted = _try_datetime(df[col])
+        if converted is not None:
             df[col] = converted
-        except Exception:
-            pass
 
     datetime_cols = df.select_dtypes(include=["datetime", "datetimetz"]).columns.tolist()
     numeric_cols = df.select_dtypes(include="number").columns.tolist()
@@ -189,16 +214,13 @@ def build_chart(df: pd.DataFrame):
     for the given DataFrame. Returns None if no chart is possible.
     """
 
-    # Safety checks
     if df is None or df.empty:
         return None
 
-    # Work on a copy — never mutate original
     df, numeric_cols, categorical_cols, datetime_cols = _detect_columns(df)
-
     total_cols = len(df.columns)
 
-    # ── A. SINGLE COLUMN ──────────────────────────────────────────────────────
+    # A. SINGLE COLUMN
     if total_cols == 1:
         if numeric_cols:
             return _histogram(df, numeric_cols[0])
@@ -206,11 +228,11 @@ def build_chart(df: pd.DataFrame):
             return _bar_value_counts(df, categorical_cols[0])
         return None
 
-    # ── B. TIME SERIES (highest priority) ────────────────────────────────────
+    # B. TIME SERIES (highest priority)
     if datetime_cols and numeric_cols:
         return _time_series(df, datetime_cols[0], numeric_cols[0])
 
-    # ── C. NUMERIC RELATIONSHIP (scatter) ────────────────────────────────────
+    # C. NUMERIC RELATIONSHIP (scatter)
     if len(numeric_cols) >= 2 and not categorical_cols and not datetime_cols:
         col_x = numeric_cols[0]
         col_y = max(
@@ -219,14 +241,13 @@ def build_chart(df: pd.DataFrame):
         )
         return _scatter(df, col_x, col_y)
 
-    # ── D. CATEGORICAL + NUMERIC ──────────────────────────────────────────────
+    # D. CATEGORICAL + NUMERIC
     if not numeric_cols:
         return None
 
-    # Pick best numeric Y: highest unique count = real metric
     col_y = max(numeric_cols, key=lambda c: df[c].nunique())
 
-    # D1. Two categorical columns + numeric → heatmap
+    # D1. Two categorical + numeric -> heatmap
     if len(categorical_cols) >= 2:
         cat_1 = categorical_cols[0]
         cat_2 = categorical_cols[1]
@@ -236,9 +257,7 @@ def build_chart(df: pd.DataFrame):
             agg = df.groupby([cat_1, cat_2])[col_y].mean().reset_index()
             return _heatmap(agg, cat_1, cat_2, col_y)
 
-    # Single categorical column from here
     if not categorical_cols:
-        # Fallback: treat lowest-unique numeric as X
         remaining = [c for c in numeric_cols if c != col_y]
         if remaining:
             return _line(df, remaining[0], col_y)
@@ -246,11 +265,10 @@ def build_chart(df: pd.DataFrame):
 
     col_x = categorical_cols[0]
 
-    # Aggregate duplicates
     agg_df = df.groupby(col_x)[col_y].mean().reset_index()
     n_categories = agg_df[col_x].nunique()
 
-    # D2. ≤ 3 categories → donut
+    # D2. <= 3 categories -> donut
     if n_categories <= 3:
         return _donut(agg_df, col_x, col_y)
 
@@ -259,7 +277,7 @@ def build_chart(df: pd.DataFrame):
     if any(kw in col_x.lower() for kw in funnel_keywords):
         return _funnel(agg_df, col_x, col_y)
 
-    # D4. Violin: many Y values per category (distribution analysis)
+    # D4. Violin: many Y values per category
     y_unique = df[col_y].nunique()
     if y_unique > 15 and n_categories <= 10 and len(df) >= 20:
         return _violin(df, col_x, col_y)
@@ -270,3 +288,4 @@ def build_chart(df: pd.DataFrame):
 
     # D6. Line: too many categories, treat as continuous
     return _line(agg_df, col_x, col_y)
+

@@ -19,7 +19,7 @@ INSIGHT_PROMPT = PromptTemplate(
     template="""
 You are a business analyst. A user asked a data question and got the following result.
 Write 2-3 sentences of clear, actionable business insight based on the result.
-Be specific — mention actual numbers from the result.
+Be specific -- mention actual numbers from the result.
 Do not repeat the question. Do not explain the SQL.
 
 Question: {question}
@@ -31,12 +31,13 @@ Insight:
 """
 )
 
+
 def generate_insight(question: str, sql: str, df) -> str:
     result_str = df.head(20).to_string(index=False)
     chain = INSIGHT_PROMPT | llm | StrOutputParser()
     insight = chain.invoke({
         "question": question,
         "sql": sql,
-        "result": result_str
+        "result": result_str,
     })
     return insight.strip()
